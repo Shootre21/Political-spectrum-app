@@ -130,6 +130,9 @@ header p {
     font-size: 1rem;
     cursor: pointer;
     transition: background-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, transform 0.1s ease;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
 }
 
 .headline-button:hover {
@@ -137,6 +140,29 @@ header p {
     box-shadow: 0 2px 8px var(--shadow-color);
     transform: translateY(-2px);
 }
+
+.headline-emoji {
+    font-size: 1.75rem;
+    line-height: 1;
+}
+
+.headline-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.headline-text {
+    font-weight: 500;
+    color: var(--text-color);
+}
+
+.headline-source {
+    font-size: 0.85rem;
+    color: #6c757d;
+    font-style: italic;
+}
+
 
 .back-button {
   font-family: var(--font-family);

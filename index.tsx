@@ -23,9 +23,15 @@ interface AnalysisResult {
   spectrumJustification: string;
 }
 
+interface Headline {
+    headline: string;
+    source: string;
+    emoji: string;
+}
+
 interface Headlines {
-    leftHeadlines: string[];
-    rightHeadlines: string[];
+    leftHeadlines: Headline[];
+    rightHeadlines: Headline[];
 }
 
 
@@ -84,7 +90,7 @@ const App = () => {
 
       const response = await ai.current.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: "Generate a list of recent, distinct news headlines from US media. Provide 5 headlines typical of left-leaning sources (like CNN, MSNBC, NBC) and 5 headlines typical of right-leaning sources (like FOX News, Daily Wire, Newsmax).",
+        contents: "Generate a list of recent, distinct news headlines from US media. Provide 5 headlines typical of left-leaning sources (like CNN, MSNBC) and 5 from right-leaning sources (like FOX News, Daily Wire). For each headline, provide the source and an emoji that reflects its political tone. Use moderate emojis (e.g., 😐, 🤔) for center-leaning stories, and more extreme or 'crazy' emojis (e.g., 🤯, 😡, 🤡) for stories that are highly partisan or sensational.",
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -92,13 +98,27 @@ const App = () => {
             properties: {
               leftHeadlines: {
                 type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "5 headlines from left-leaning sources."
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    headline: { type: Type.STRING },
+                    source: { type: Type.STRING },
+                    emoji: { type: Type.STRING, description: "A single emoji representing the tone." }
+                  }
+                },
+                description: "5 headlines from left-leaning sources with source and emoji."
               },
               rightHeadlines: {
                 type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "5 headlines from right-leaning sources."
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    headline: { type: Type.STRING },
+                    source: { type: Type.STRING },
+                    emoji: { type: Type.STRING, description: "A single emoji representing the tone." }
+                  }
+                },
+                description: "5 headlines from right-leaning sources with source and emoji."
               },
             },
           },
@@ -353,10 +373,14 @@ const App = () => {
                         <div className="headlines-column">
                             <h2>Left-Leaning Headlines</h2>
                             <ul>
-                                {headlines.leftHeadlines.map((headline, index) => (
+                                {headlines.leftHeadlines.map((item, index) => (
                                     <li key={`left-${index}`}>
-                                        <button className="headline-button" onClick={() => getAnalysis(headline)}>
-                                            {headline}
+                                        <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
+                                            <span className="headline-emoji">{item.emoji}</span>
+                                            <div className="headline-content">
+                                                <span className="headline-text">{item.headline}</span>
+                                                <span className="headline-source">{item.source}</span>
+                                            </div>
                                         </button>
                                     </li>
                                 ))}
@@ -365,10 +389,14 @@ const App = () => {
                         <div className="headlines-column">
                             <h2>Right-Leaning Headlines</h2>
                              <ul>
-                                {headlines.rightHeadlines.map((headline, index) => (
+                                {headlines.rightHeadlines.map((item, index) => (
                                     <li key={`right-${index}`}>
-                                        <button className="headline-button" onClick={() => getAnalysis(headline)}>
-                                            {headline}
+                                        <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
+                                             <span className="headline-emoji">{item.emoji}</span>
+                                            <div className="headline-content">
+                                                <span className="headline-text">{item.headline}</span>
+                                                <span className="headline-source">{item.source}</span>
+                                            </div>
                                         </button>
                                     </li>
                                 ))}
