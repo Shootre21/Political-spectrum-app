@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -36,10 +37,42 @@ interface Headlines {
     rightHeadlines: Headline[];
 }
 
+// FIX: Using a standard function declaration for `safeParseJson` to avoid ambiguity between generics and JSX syntax, which was causing widespread parser errors.
+function safeParseJson<T>(jsonString: string): T {
+  try {
+      const startIndex = jsonString.indexOf('{');
+      const endIndex = jsonString.lastIndexOf('}');
+      if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
+          throw new Error("Could not find a valid JSON object in the response.");
+      }
+      const jsonText = jsonString.substring(startIndex, endIndex + 1);
+      return JSON.parse(jsonText) as T;
+  } catch (e) {
+      console.error("Failed to parse JSON response:", jsonString, e);
+      throw new Error("The AI returned an invalid format. Please try again.");
+  }
+};
+
+// FIX: Added type aliases for complex JSON response shapes to improve readability and prevent JSX parsing issues.
+type FoundArticlesResponse = {
+  rightWingArticle: { title: string; url: string; source: string; publishedAt: string; };
+  leftWingArticle: { title: string; url: string; source: string; publishedAt: string; };
+};
+
+type AnalysisDataResponse = {
+  rightWingArticleAnalysis: { summary: string; spinAnalysis: string; };
+  leftWingArticleAnalysis: { summary: string; portrayalOfRight: string; };
+  leftistTalkingPoints: string[];
+  socialistTalkingPoints: string[];
+  spectrumScore: number;
+  spectrumJustification: string;
+};
+
 
 const App = () => {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [loadingMessage, setLoadingMessage] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [headlines, setHeadlines] = useState<Headlines | null>(null);
   const [latestHeadlines, setLatestHeadlines] = useState<Headline[] | null>(null);
@@ -201,6 +234,7 @@ const App = () => {
 
   const getAnalysis = async (topic: string) => {
     setLoading(true);
+    setLoadingMessage("Initializing analysis...");
     setError(null);
     setAnalysis(null);
     stopSpeech();
@@ -209,80 +243,180 @@ const App = () => {
     try {
       if (!ai.current) throw new Error("AI client not initialized.");
 
-      const prompt = `
-        Analyze the following news topic: "${topic}".
-
-        For this topic, please perform the following actions using Google Search for grounding:
-        1.  Find one representative news article from a source generally considered right-leaning. Include its publication date.
-        2.  Find one representative news article from a source generally considered left-leaning that covers the same event or topic. Include its publication date.
-        3.  Analyze the right-leaning article to summarize its main arguments and identify its political 'spin' or narrative framing.
-        4.  Analyze the left-leaning article, summarize its points, and describe how it portrays the right-wing perspective.
-        5.  Distill and list the key 'talking points' from the left-leaning perspective that challenge or counter the right-wing narrative.
-        6.  Distill and list key 'talking points' from a socialist perspective. These points should critique both the right-wing and left-wing (liberal) narratives, focusing on underlying class interests, labor, the role of capitalism, or systemic issues that both mainstream perspectives might ignore.
-        7.  Based on the topic's framing and typical media coverage, assign a 'spectrumScore' from -10 (very liberal/left) to +10 (very conservative/right), where 0 is neutral.
-        8.  Provide a brief 'spectrumJustification' explaining the reasoning for the score.
-
-        IMPORTANT: Your entire response MUST be a single, valid JSON object. Do not include any text, explanations, or markdown formatting like \`\`\`json before or after the JSON object.
-
-        The JSON object must follow this exact structure:
-        {
-          "topic": "string",
-          "rightWingArticle": {
-            "title": "string",
-            "url": "string",
-            "source": "string",
-            "publishedAt": "string",
-            "summary": "string",
-            "spinAnalysis": "string"
-          },
-          "leftWingArticle": {
-            "title": "string",
-            "url": "string",
-            "source": "string",
-            "publishedAt": "string",
-            "summary": "string",
-            "portrayalOfRight": "string"
-          },
-          "leftistTalkingPoints": ["string"],
-          "socialistTalkingPoints": ["string"],
-          "spectrumScore": "number",
-          "spectrumJustification": "string"
-        }
-      `;
-
-      const response = await ai.current.models.generateContent({
+      // Step 1: Find the articles using Google Search
+      setLoadingMessage("Finding relevant articles...");
+      const searchPrompt = `
+        Find two representative news articles for the topic: "${topic}".
+        1. One article should be from a source generally considered right-leaning in the US.
+        2. The other article should be from a source generally considered left-leaning in the US.
+        For each article, provide the title, the full URL, the source name, and the publication date.
+        Your response must be a single, valid JSON object.`;
+      
+      const searchResponse = await ai.current.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: prompt,
+        contents: searchPrompt,
         config: {
           tools: [{ googleSearch: {} }],
         },
       });
-      
-      const responseText = response.text.trim();
-      
-      const startIndex = responseText.indexOf('{');
-      const endIndex = responseText.lastIndexOf('}');
 
-      if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
-          console.error("Failed to find JSON object in response:", responseText);
-          throw new Error("The AI returned a response that did not contain a valid JSON object. Please try again.");
-      }
-      
-      const jsonText = responseText.substring(startIndex, endIndex + 1);
+      const parsedResponse = safeParseJson<any>(searchResponse.text);
 
-      try {
-        const parsedJson = JSON.parse(jsonText);
-        setAnalysis(parsedJson);
-      } catch (e) {
-         console.error("Failed to parse JSON response:", jsonText, e);
-         throw new Error("The AI returned an invalid format. Please try again.");
+      let rightWingArticle: any, leftWingArticle: any;
+
+      const normalizeArticle = (article: any) => {
+          if (!article) return null;
+          // The AI sometimes returns publication_date. Normalize it.
+          const publishedAt = article.publishedAt || article.publication_date;
+          if (!publishedAt) {
+              console.warn("Article missing publication date:", article);
+          }
+          return {
+              ...article,
+              publishedAt: publishedAt || new Date().toISOString(), // Fallback to now if date is missing
+          };
+      };
+
+      if (parsedResponse.rightWingArticle && parsedResponse.leftWingArticle) {
+          rightWingArticle = normalizeArticle(parsedResponse.rightWingArticle);
+          leftWingArticle = normalizeArticle(parsedResponse.leftWingArticle);
+      } else if (parsedResponse.articles && parsedResponse.articles.length >= 2) {
+          setLoadingMessage("Classifying article perspectives...");
+          const articlesToClassify = parsedResponse.articles.slice(0, 2);
+          
+          const classifyPrompt = `
+              Given the following two articles, identify which one is from a right-leaning source.
+              Article A: { "title": "${articlesToClassify[0].title}", "source": "${articlesToClassify[0].source}" }
+              Article B: { "title": "${articlesToClassify[1].title}", "source": "${articlesToClassify[1].source}" }
+  
+              Your response MUST be a single, valid JSON object with one key: "rightWingArticleSource". The value should be the exact source name of the right-leaning article (e.g., "Fox News").`;
+          
+          const classifyResponse = await ai.current.models.generateContent({
+              model: "gemini-2.5-flash",
+              contents: classifyPrompt,
+              config: {
+                  responseMimeType: "application/json",
+                  responseSchema: {
+                      type: Type.OBJECT,
+                      properties: {
+                          rightWingArticleSource: { type: Type.STRING, description: "The exact source name of the right-leaning article." }
+                      },
+                      required: ["rightWingArticleSource"]
+                  }
+              }
+          });
+          
+          const classification = safeParseJson<{rightWingArticleSource: string}>(classifyResponse.text);
+          const rightSource = classification.rightWingArticleSource;
+
+          const articleA = articlesToClassify[0];
+          const articleB = articlesToClassify[1];
+
+          if (articleA.source === rightSource) {
+              rightWingArticle = normalizeArticle(articleA);
+              leftWingArticle = normalizeArticle(articleB);
+          } else {
+              rightWingArticle = normalizeArticle(articleB);
+              leftWingArticle = normalizeArticle(articleA);
+          }
       }
+
+      if (
+        !rightWingArticle ||
+        !leftWingArticle ||
+        !rightWingArticle.title ||
+        !leftWingArticle.title
+      ) {
+        console.error("The AI failed to structure its response correctly or find two distinct articles. Raw Response:", searchResponse.text);
+        throw new Error("The AI could not find suitable left and right-leaning articles for this topic. Please try a different headline.");
+      }
+
+
+      // Step 2: Analyze the articles
+      setLoadingMessage("Analyzing perspectives...");
+      const analysisPrompt = `
+        Analyze the news topic "${topic}" based on the two provided articles.
+
+        Right-Leaning Article:
+        - Title: ${rightWingArticle.title}
+        - Source: ${rightWingArticle.source}
+        - URL: ${rightWingArticle.url}
+
+        Left-Leaning Article:
+        - Title: ${leftWingArticle.title}
+        - Source: ${leftWingArticle.source}
+        - URL: ${leftWingArticle.url}
+
+        Perform the following analysis:
+        1. For the right-leaning article: Write a summary of its main arguments and identify its political 'spin' or narrative framing.
+        2. For the left-leaning article: Write a summary of its main points and describe how it portrays the right-wing perspective on the topic.
+        3. Distill and list the key 'talking points' from the left-leaning perspective that challenge or counter the right-wing narrative.
+        4. Distill and list key 'talking points' from a socialist perspective, critiquing both mainstream narratives by focusing on class, labor, capitalism, or systemic issues.
+        5. Assign a 'spectrumScore' from -10 (very liberal/left) to +10 (very conservative/right), where 0 is neutral, based on the topic's general framing in media.
+        6. Provide a brief 'spectrumJustification' for the score.
+
+        Your response must be a single, valid JSON object.`;
+        
+      const analysisResponse = await ai.current.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: analysisPrompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+                rightWingArticleAnalysis: {
+                    type: Type.OBJECT,
+                    properties: {
+                        summary: { type: Type.STRING },
+                        spinAnalysis: { type: Type.STRING },
+                    }
+                },
+                leftWingArticleAnalysis: {
+                    type: Type.OBJECT,
+                    properties: {
+                        summary: { type: Type.STRING },
+                        portrayalOfRight: { type: Type.STRING },
+                    }
+                },
+                leftistTalkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+                socialistTalkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+                spectrumScore: { type: Type.NUMBER },
+                spectrumJustification: { type: Type.STRING },
+            }
+          }
+        },
+      });
+
+      const analysisData = safeParseJson<AnalysisDataResponse>(analysisResponse.text);
+
+      // Step 3: Combine results and set state
+      const finalResult: AnalysisResult = {
+        topic: topic,
+        rightWingArticle: {
+          ...rightWingArticle,
+          summary: analysisData.rightWingArticleAnalysis.summary,
+          spinAnalysis: analysisData.rightWingArticleAnalysis.spinAnalysis,
+        },
+        leftWingArticle: {
+          ...leftWingArticle,
+          summary: analysisData.leftWingArticleAnalysis.summary,
+          portrayalOfRight: analysisData.leftWingArticleAnalysis.portrayalOfRight,
+        },
+        leftistTalkingPoints: analysisData.leftistTalkingPoints,
+        socialistTalkingPoints: analysisData.socialistTalkingPoints,
+        spectrumScore: analysisData.spectrumScore,
+        spectrumJustification: analysisData.spectrumJustification,
+      };
+
+      setAnalysis(finalResult);
 
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : "An unknown error occurred.");
     } finally {
       setLoading(false);
+      setLoadingMessage("");
     }
   };
   
@@ -323,53 +457,57 @@ const App = () => {
     if (globalSpeechState === 'stopped' && analysis) {
       stopSpeech(); // Ensure a completely clean state before starting
 
-      const speechItems: { cardId: string; text: string }[] = [];
+      const speechQueue: { cardId: string; text: string }[] = [];
 
-      const addItems = (cardId: string, ...texts: (string | undefined | null)[]) => {
-          texts.forEach(text => {
-              if (text && text.trim().length > 0) {
-                  speechItems.push({ cardId, text });
-              }
-          });
+      const addToQueue = (cardId: string, text: string | undefined | null, shouldSplit = false) => {
+          if (!text || text.trim().length === 0) return;
+          if (shouldSplit) {
+              // Split into sentences but keep delimiters.
+              const sentences = text.match(/[^.!?]+[.!?]?/g) || [text];
+              sentences.forEach(sentence => {
+                  const trimmed = sentence.trim();
+                  if (trimmed) speechQueue.push({ cardId, text: trimmed });
+              });
+          } else {
+              speechQueue.push({ cardId, text });
+          }
       };
       
-      addItems('right-wing', 
-          'Right-Wing Perspective.',
-          `Title: ${analysis.rightWingArticle.title}`,
-          `Source: ${analysis.rightWingArticle.source}`,
-          'Summary:',
-          analysis.rightWingArticle.summary,
-          'Narrative and Spin Analysis:',
-          analysis.rightWingArticle.spinAnalysis
-      );
+      addToQueue('right-wing', 'Right-Wing Perspective.');
+      addToQueue('right-wing', `Title: ${analysis.rightWingArticle.title}`);
+      addToQueue('right-wing', `Source: ${analysis.rightWingArticle.source}`);
+      addToQueue('right-wing', 'Summary:');
+      addToQueue('right-wing', analysis.rightWingArticle.summary, true);
+      addToQueue('right-wing', 'Narrative and Spin Analysis:');
+      addToQueue('right-wing', analysis.rightWingArticle.spinAnalysis, true);
       
-      addItems('left-wing',
-          'Left-Wing Perspective.',
-          `Title: ${analysis.leftWingArticle.title}`,
-          `Source: ${analysis.leftWingArticle.source}`,
-          'Summary:',
-          analysis.leftWingArticle.summary,
-          'Portrayal of Right-Wing View:',
-          analysis.leftWingArticle.portrayalOfRight
-      );
+      addToQueue('left-wing', 'Left-Wing Perspective.');
+      addToQueue('left-wing', `Title: ${analysis.leftWingArticle.title}`);
+      addToQueue('left-wing', `Source: ${analysis.leftWingArticle.source}`);
+      addToQueue('left-wing', 'Summary:');
+      addToQueue('left-wing', analysis.leftWingArticle.summary, true);
+      addToQueue('left-wing', 'Portrayal of Right-Wing View:');
+      addToQueue('left-wing', analysis.leftWingArticle.portrayalOfRight, true);
 
-      addItems('leftist-points', 'Leftist Talking Points.');
-      analysis.leftistTalkingPoints.forEach(point => addItems('leftist-points', point));
+      addToQueue('leftist-points', 'Leftist Talking Points.');
+      analysis.leftistTalkingPoints.forEach(point => addToQueue('leftist-points', point, true));
       
-      addItems('socialist-points', 'Socialist Talking Points.');
-      analysis.socialistTalkingPoints.forEach(point => addItems('socialist-points', point));
+      addToQueue('socialist-points', 'Socialist Talking Points.');
+      analysis.socialistTalkingPoints.forEach(point => addToQueue('socialist-points', point, true));
 
       const preferredVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
 
-      const utterancesWithIds = speechItems.map(item => {
+      const utterancesWithIds = speechQueue.map(item => {
         const utterance = new SpeechSynthesisUtterance(item.text);
         if (preferredVoice) utterance.voice = preferredVoice;
         utterance.rate = 0.95;
         utterance.pitch = 1.0;
         
-        utterance.onerror = (e) => {
-          console.error("Speech synthesis error:", e);
-          setError("An error occurred during speech synthesis.");
+        utterance.onerror = (e: SpeechSynthesisErrorEvent) => {
+          console.error("Speech synthesis error event:", e);
+          const errorMessage = e.error || 'unknown error';
+          console.error(`Speech synthesis failed with error: ${errorMessage}`);
+          setError(`Speech synthesis failed: ${errorMessage}. Please try a different voice or refresh the page.`);
           stopSpeech();
         };
 
@@ -413,235 +551,214 @@ const App = () => {
     }
   };
   
-  const SpeakerIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-      <path d="M11.536 14.01A8.47 8.47 0 0 0 14.026 8a8.47 8.47 0 0 0-2.49-6.01l-1.414 1.414A6.47 6.47 0 0 1 12.025 8a6.47 6.47 0 0 1-1.904 4.596z"/>
-      <path d="M10.121 12.596A6.47 6.47 0 0 0 12.025 8a6.47 6.47 0 0 0-1.904-4.596l-1.414 1.414A4.47 4.47 0 0 1 10.025 8a4.47 4.47 0 0 1-1.318 3.182z"/>
-      <path d="M8.707 11.182A2.47 2.47 0 0 0 9.025 8a2.47 2.47 0 0 0-.318-1.182L7.293 8.293A1.47 1.47 0 0 1 7.525 8a1.47 1.47 0 0 1-.232.886zM6.5 12a5.5 5.5 0 0 1-5.5-5.5v-1a5.5 5.5 0 0 1 5.5-5.5h1a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5z"/>
-    </svg>
+  const HeadlinesView = () => (
+    <>
+        {latestHeadlines && latestHeadlines.length > 0 && (
+            <section className="latest-news-section">
+                <h2>Latest Developments</h2>
+                <ul>
+                    {latestHeadlines.map((item, index) => (
+                        <li key={`latest-${index}`}>
+                            <button className="headline-button latest-headline-button" onClick={() => getAnalysis(item.headline)}>
+                                <span className="headline-emoji">{item.emoji}</span>
+                                <div className="headline-content">
+                                    <span className="headline-text">{item.headline}</span>
+                                    <div className="headline-meta">
+                                        <span className="headline-source">{item.source}</span>
+                                        <span className="headline-date">{new Date(item.publishedAt).toLocaleDateString()}</span>
+                                    </div>
+                                </div>
+                            </button>
+                        </li>
+                    ))}
+                </ul>
+            </section>
+        )}
+        <section className="headlines-section">
+            <div className="headlines-container">
+                <div className="headlines-column">
+                    <h2>Left-Leaning Headlines</h2>
+                    <ul>
+                        {headlines?.leftHeadlines.map((item, index) => (
+                            <li key={`left-${index}`}>
+                                <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
+                                    <span className="headline-emoji">{item.emoji}</span>
+                                    <div className="headline-content">
+                                        <span className="headline-text">{item.headline}</span>
+                                        <div className="headline-meta">
+                                            <span className="headline-source">{item.source}</span>
+                                            <span className="headline-date">{new Date(item.publishedAt).toLocaleDateString()}</span>
+                                        </div>
+                                    </div>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+                <div className="headlines-column">
+                    <h2>Right-Leaning Headlines</h2>
+                    <ul>
+                        {headlines?.rightHeadlines.map((item, index) => (
+                            <li key={`right-${index}`}>
+                                <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
+                                    <span className="headline-emoji">{item.emoji}</span>
+                                    <div className="headline-content">
+                                        <span className="headline-text">{item.headline}</span>
+                                        <div className="headline-meta">
+                                            <span className="headline-source">{item.source}</span>
+                                            <span className="headline-date">{new Date(item.publishedAt).toLocaleDateString()}</span>
+                                        </div>
+                                    </div>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+        </section>
+    </>
   );
 
-  const PauseIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-      <path d="M6 3.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5.5zm4 0a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5.5z"/>
-    </svg>
-  );
-
-  const getGlobalButtonContent = () => {
-    if (globalSpeechState === 'playing') {
-      return { Icon: PauseIcon, text: 'Pause Analysis' };
-    }
-    if (globalSpeechState === 'paused') {
-      return { Icon: SpeakerIcon, text: 'Resume Analysis' };
-    }
-    return { Icon: SpeakerIcon, text: 'Read Full Analysis' };
-  };
-
-  const SpectrumMeter = ({ score, justification }: { score: number; justification: string }) => {
-    const percentage = ((score + 10) / 20) * 100;
-    const markerPosition = `calc(${percentage}% - 8px)`;
-
-    return (
-        <div className="card spectrum-meter">
+  const Results = () => (
+    <div className="results-container">
+        <div className="results-controls">
+            <button className="back-button" onClick={resetView}>&larr; Back to Headlines</button>
+            <div className="speech-controls">
+                {voices.length > 0 && (
+                    <div className="voice-selector">
+                        <label htmlFor="voice-select">Voice:</label>
+                        <select id="voice-select" value={selectedVoiceURI} onChange={e => setSelectedVoiceURI(e.target.value)}>
+                            {voices.map(voice => (
+                                <option key={voice.voiceURI} value={voice.voiceURI}>
+                                    {voice.name} ({voice.lang})
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
+                <button onClick={handleGlobalSpeech} className="global-read-aloud-button">
+                    {globalSpeechState === 'playing' && <PauseIcon />}
+                    {globalSpeechState === 'paused' && <PlayIcon />}
+                    {globalSpeechState === 'stopped' && <SpeakerIcon />}
+                    <span>
+                        {globalSpeechState === 'stopped' && 'Read Full Analysis'}
+                        {globalSpeechState === 'playing' && 'Pause Reading'}
+                        {globalSpeechState === 'paused' && 'Resume Reading'}
+                    </span>
+                </button>
+            </div>
+        </div>
+        <div className={`card topic-card ${currentlySpeakingCard === 'topic' ? 'is-speaking' : ''}`}>
             <div className="card-header">
-                <h2>Political Spectrum Analysis</h2>
+                <h2>{analysis!.topic}</h2>
+            </div>
+        </div>
+        <div className={`card spectrum-meter ${currentlySpeakingCard === 'spectrum' ? 'is-speaking' : ''}`}>
+            <div className="card-header">
+                <h2>Political Spectrum Score</h2>
             </div>
             <div className="spectrum-track">
-                <div className="spectrum-marker" style={{ left: markerPosition }} title={`Score: ${score}`}></div>
+                <div className="spectrum-marker" style={{ left: `${((analysis!.spectrumScore + 10) / 20) * 100}%` }}></div>
             </div>
             <div className="spectrum-labels">
-                <span>-10 Far Left</span>
-                <span>Center</span>
-                <span>+10 Far Right</span>
+                <span>Liberal</span>
+                <span>Neutral</span>
+                <span>Conservative</span>
             </div>
-            <p className="spectrum-justification"><strong>Justification:</strong> {justification}</p>
+            <p className="spectrum-justification">{analysis!.spectrumJustification}</p>
         </div>
-    );
-  };
+        <div className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
+            <div className="card-header">
+                <h2>Right-Wing Perspective</h2>
+            </div>
+            <h3><a href={analysis!.rightWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis!.rightWingArticle.title}</a></h3>
+            <p className="article-date"><strong>Source:</strong> {analysis!.rightWingArticle.source} | <strong>Published:</strong> {new Date(analysis!.rightWingArticle.publishedAt).toLocaleDateString()}</p>
+            <h4>Summary</h4>
+            <p>{analysis!.rightWingArticle.summary}</p>
+            <h4>Narrative and Spin Analysis</h4>
+            <p>{analysis!.rightWingArticle.spinAnalysis}</p>
+        </div>
+        <div className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
+            <div className="card-header">
+                <h2>Left-Wing Perspective</h2>
+            </div>
+            <h3><a href={analysis!.leftWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis!.leftWingArticle.title}</a></h3>
+            <p className="article-date"><strong>Source:</strong> {analysis!.leftWingArticle.source} | <strong>Published:</strong> {new Date(analysis!.leftWingArticle.publishedAt).toLocaleDateString()}</p>
+            <h4>Summary</h4>
+            <p>{analysis!.leftWingArticle.summary}</p>
+            <h4>Portrayal of Right-Wing View</h4>
+            <p>{analysis!.leftWingArticle.portrayalOfRight}</p>
+        </div>
+        <div className={`card talking-points left-wing-card ${currentlySpeakingCard === 'leftist-points' ? 'is-speaking' : ''}`}>
+             <div className="card-header">
+                <h2>Leftist Talking Points</h2>
+            </div>
+            <ul>
+                {analysis!.leftistTalkingPoints.map((point, index) => <li key={index}>{point}</li>)}
+            </ul>
+        </div>
+        <div className={`card talking-points socialist-card ${currentlySpeakingCard === 'socialist-points' ? 'is-speaking' : ''}`}>
+             <div className="card-header">
+                <h2>Socialist Talking Points</h2>
+            </div>
+            <ul>
+                {analysis!.socialistTalkingPoints.map((point, index) => <li key={index}>{point}</li>)}
+            </ul>
+        </div>
+    </div>
+  );
 
   return (
     <main>
-        <header>
-          <h1>Political News Spectrum</h1>
-          <p>
-            Explore how different political spectrums report on the same story.
-            This tool analyzes right, left, and socialist perspectives to reveal spin,
-            narratives, and key talking points.
-          </p>
-        </header>
+      <header>
+        <h1>Political News Spectrum</h1>
+        <p>See the narratives from all sides. Select a headline to get a balanced analysis of the different perspectives.</p>
+      </header>
+      
+      {loading && (
+        <div className="loader-container">
+            <div className="loader"></div>
+            <p className="loading-message">{loadingMessage}</p>
+        </div>
+      )}
+      {error && <div className="error">{error}</div>}
 
-        {loading && <div className="loader" aria-label="Loading content"></div>}
-        {error && (
-            <div className="error" role="alert">
-                <p><strong>Error:</strong> {error}</p>
-                {analysis && <button onClick={resetView}>Back to Headlines</button>}
+      {analysis ? <Results /> : (
+        headlinesLoading ? (
+            <div className="loader-container">
+                <div className="loader"></div>
+                <p className="loading-message">Fetching latest headlines...</p>
             </div>
-        )}
-        
-        {!analysis && !loading && (
-             <div className="headlines-section">
-                {headlinesLoading && <div className="loader" aria-label="Loading headlines"></div>}
-                {headlinesError && <div className="error" role="alert"><p>{headlinesError}</p></div>}
-                {latestHeadlines && (
-                    <div className="latest-news-section">
-                        <h2>Most Recent News</h2>
-                        <ul>
-                            {latestHeadlines.map((item, index) => (
-                                <li key={`latest-${index}`}>
-                                    <button className="headline-button latest-headline-button" onClick={() => getAnalysis(item.headline)}>
-                                        <span className="headline-emoji">{item.emoji}</span>
-                                        <div className="headline-content">
-                                            <span className="headline-text">{item.headline}</span>
-                                            <div className="headline-meta">
-                                                <span className="headline-source">{item.source}</span>
-                                                {item.publishedAt && <span className="headline-date">{new Date(item.publishedAt).toLocaleString()}</span>}
-                                            </div>
-                                        </div>
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {headlines && (
-                    <div className="headlines-container">
-                        <div className="headlines-column">
-                            <h2>Left-Leaning Headlines</h2>
-                            <ul>
-                                {headlines.leftHeadlines.map((item, index) => (
-                                    <li key={`left-${index}`}>
-                                        <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
-                                            <span className="headline-emoji">{item.emoji}</span>
-                                            <div className="headline-content">
-                                                <span className="headline-text">{item.headline}</span>
-                                                <div className="headline-meta">
-                                                    <span className="headline-source">{item.source}</span>
-                                                    {item.publishedAt && <span className="headline-date">{new Date(item.publishedAt).toLocaleString()}</span>}
-                                                </div>
-                                            </div>
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                        <div className="headlines-column">
-                            <h2>Right-Leaning Headlines</h2>
-                             <ul>
-                                {headlines.rightHeadlines.map((item, index) => (
-                                    <li key={`right-${index}`}>
-                                        <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
-                                             <span className="headline-emoji">{item.emoji}</span>
-                                            <div className="headline-content">
-                                                <span className="headline-text">{item.headline}</span>
-                                                <div className="headline-meta">
-                                                    <span className="headline-source">{item.source}</span>
-                                                    {item.publishedAt && <span className="headline-date">{new Date(item.publishedAt).toLocaleString()}</span>}
-                                                </div>
-                                            </div>
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    </div>
-                )}
-            </div>
-        )}
-        
-        {analysis && !loading && (
-          <div className="results-container" aria-live="polite">
-            <div className="results-controls">
-                <button className="back-button" onClick={resetView}>← Back to Headlines</button>
-                <div className="speech-controls">
-                    {voices && voices.length > 0 && (
-                        <div className="voice-selector">
-                            <label htmlFor="voice-select">Voice:</label>
-                            <select 
-                                id="voice-select" 
-                                value={selectedVoiceURI} 
-                                onChange={(e) => setSelectedVoiceURI(e.target.value)}
-                            >
-                                {voices.filter(v => v.lang.startsWith('en')).map((voice) => (
-                                    <option key={voice.voiceURI} value={voice.voiceURI}>
-                                        {voice.name} ({voice.lang})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
-                    {(() => {
-                        const { Icon, text } = getGlobalButtonContent();
-                        return (
-                            <button className="global-read-aloud-button" onClick={handleGlobalSpeech} aria-label={text}>
-                            <Icon /> {text}
-                            </button>
-                        );
-                    })()}
-                </div>
-            </div>
-            <div className="card topic-card">
-              <div className="card-header">
-                <h2>Topic</h2>
-              </div>
-              <p>{analysis.topic}</p>
-            </div>
-
-            <SpectrumMeter score={analysis.spectrumScore} justification={analysis.spectrumJustification} />
-
-            <div id="right-wing" className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
-              <div className="card-header">
-                <h2>Right-Wing Perspective</h2>
-              </div>
-              <h3><a href={analysis.rightWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis.rightWingArticle.title}</a></h3>
-              <p><strong>Source:</strong> {analysis.rightWingArticle.source}</p>
-              {analysis.rightWingArticle.publishedAt && <p className="article-date"><strong>Published:</strong> {new Date(analysis.rightWingArticle.publishedAt).toLocaleString()}</p>}
-              <h4>Summary</h4>
-              <p>{analysis.rightWingArticle.summary}</p>
-              <h4>Narrative & Spin Analysis</h4>
-              <p>{analysis.rightWingArticle.spinAnalysis}</p>
-            </div>
-
-            <div id="left-wing" className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
-              <div className="card-header">
-                <h2>Left-Wing Perspective</h2>
-              </div>
-              <h3><a href={analysis.leftWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis.leftWingArticle.title}</a></h3>
-              <p><strong>Source:</strong> {analysis.leftWingArticle.source}</p>
-              {analysis.leftWingArticle.publishedAt && <p className="article-date"><strong>Published:</strong> {new Date(analysis.leftWingArticle.publishedAt).toLocaleString()}</p>}
-              <h4>Summary</h4>
-              <p>{analysis.leftWingArticle.summary}</p>
-              <h4>Portrayal of Right-Wing View</h4>
-              <p>{analysis.leftWingArticle.portrayalOfRight}</p>
-            </div>
-
-            <div id="leftist-points" className={`card left-wing-card talking-points ${currentlySpeakingCard === 'leftist-points' ? 'is-speaking' : ''}`}>
-              <div className="card-header">
-                <h2>Leftist Talking Points</h2>
-              </div>
-              <ul>
-                {analysis.leftistTalkingPoints.map((point, index) => (
-                  <li key={index}>{point}</li>
-                ))}
-              </ul>
-            </div>
-
-            <div id="socialist-points" className={`card socialist-card talking-points ${currentlySpeakingCard === 'socialist-points' ? 'is-speaking' : ''}`}>
-              <div className="card-header">
-                <h2>Socialist Talking Points</h2>
-              </div>
-              <ul>
-                {analysis.socialistTalkingPoints.map((point, index) => (
-                  <li key={index}>{point}</li>
-                ))}
-              </ul>
-            </div>
-
-          </div>
-        )}
+        ) : headlinesError ? (
+            <div className="error">{headlinesError}</div>
+        ) : headlines ? (
+            <HeadlinesView />
+        ) : null
+      )}
     </main>
   );
 };
 
-const container = document.getElementById("root");
+const SpeakerIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+        <path d="M11.536 14.01A8.47 8.47 0 0 0 14.026 8a8.47 8.47 0 0 0-2.49-6.01l-.708.707A7.48 7.48 0 0 1 13.025 8c0 2.071-.84 3.946-2.197 5.303z"/>
+        <path d="M10.121 12.596A6.48 6.48 0 0 0 12.025 8a6.48 6.48 0 0 0-1.904-4.596l-.707.707A5.48 5.48 0 0 1 11.025 8a5.48 5.48 0 0 1-1.61 3.89z"/>
+        <path d="M8.707 11.182A4.5 4.5 0 0 0 10.025 8a4.5 4.5 0 0 0-1.318-3.182L8 5.525A3.5 3.5 0 0 1 9.025 8 3.5 3.5 0 0 1 8 10.475zM6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06"/>
+    </svg>
+);
+
+const PauseIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+        <path d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5m5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5"/>
+    </svg>
+);
+
+const PlayIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+        <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393"/>
+    </svg>
+);
+
+const container = document.getElementById('root');
 const root = createRoot(container!);
 root.render(<App />);
