@@ -5,22 +5,36 @@ import { GoogleGenAI, Type } from "@google/genai";
 
 const API_KEY = process.env.API_KEY;
 
-interface ArticleAnalysis {
-  title: string;
-  url: string;
-  source: string;
-  publishedAt: string;
-  summary: string;
-  spinAnalysis?: string;
-  portrayalOfRight?: string;
-}
-
+// Simplified analysis result for a single article
 interface AnalysisResult {
   topic: string;
-  rightWingArticle: ArticleAnalysis;
-  leftWingArticle: ArticleAnalysis;
-  leftistTalkingPoints: string[];
-  socialistTalkingPoints: string[];
+  article: {
+    title: string;
+    url: string;
+    source: string;
+    publishedAt: string;
+  };
+  category: string;
+  popularity: {
+    score: string;
+    justification: string;
+  };
+  wasEdited: {
+    status: boolean;
+    reasoning: string;
+  };
+  rightWingPerspective: {
+    summary: string;
+    talkingPoints: string[];
+  };
+  leftWingPerspective: {
+    summary: string;
+    talkingPoints: string[];
+  };
+  socialistPerspective: {
+    summary: string;
+    talkingPoints: string[];
+  };
   spectrumScore: number;
   spectrumJustification: string;
 }
@@ -30,6 +44,7 @@ interface Headline {
     source: string;
     emoji: string;
     publishedAt: string;
+    url: string;
 }
 
 interface Headlines {
@@ -37,7 +52,6 @@ interface Headlines {
     rightHeadlines: Headline[];
 }
 
-// FIX: Using a standard function declaration for `safeParseJson` to avoid ambiguity between generics and JSX syntax, which was causing widespread parser errors.
 function safeParseJson<T>(jsonString: string): T {
   try {
       const startIndex = jsonString.indexOf('{');
@@ -53,22 +67,6 @@ function safeParseJson<T>(jsonString: string): T {
   }
 };
 
-// FIX: Added type aliases for complex JSON response shapes to improve readability and prevent JSX parsing issues.
-type FoundArticlesResponse = {
-  rightWingArticle: { title: string; url: string; source: string; publishedAt: string; };
-  leftWingArticle: { title: string; url: string; source: string; publishedAt: string; };
-};
-
-type AnalysisDataResponse = {
-  rightWingArticleAnalysis: { summary: string; spinAnalysis: string; };
-  leftWingArticleAnalysis: { summary: string; portrayalOfRight: string; };
-  leftistTalkingPoints: string[];
-  socialistTalkingPoints: string[];
-  spectrumScore: number;
-  spectrumJustification: string;
-};
-
-
 const App = () => {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -76,6 +74,7 @@ const App = () => {
   const [error, setError] = useState<string | null>(null);
   const [headlines, setHeadlines] = useState<Headlines | null>(null);
   const [latestHeadlines, setLatestHeadlines] = useState<Headline[] | null>(null);
+  const [tickerHeadlines, setTickerHeadlines] = useState<Headline[]>([]);
   const [headlinesLoading, setHeadlinesLoading] = useState<boolean>(true);
   const [headlinesError, setHeadlinesError] = useState<string | null>(null);
 
@@ -93,6 +92,8 @@ const App = () => {
     if (API_KEY) {
       ai.current = new GoogleGenAI({ apiKey: API_KEY });
       fetchHeadlines();
+      fetchTickerHeadlines();
+      const tickerInterval = setInterval(fetchTickerHeadlines, 5 * 60 * 1000); // Refresh every 5 minutes
       
       const loadVoices = () => {
         if ('speechSynthesis' in window) {
@@ -100,7 +101,6 @@ const App = () => {
             if (availableVoices.length > 0) {
                 setVoices(availableVoices);
                 
-                // Intelligently select the best available voice as default
                 const getBestVoice = (vcs: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null => {
                     if (!vcs || vcs.length === 0) return null;
                     const lang = 'en-US';
@@ -137,6 +137,7 @@ const App = () => {
         if ('speechSynthesis' in window) {
             window.speechSynthesis.cancel();
         }
+        clearInterval(tickerInterval);
       }
     } else {
         setHeadlinesError("API_KEY is not set.");
@@ -144,6 +145,44 @@ const App = () => {
         setHeadlinesLoading(false);
     }
   }, []);
+
+  const fetchTickerHeadlines = async () => {
+    try {
+        if (!ai.current) return;
+        const response = await ai.current.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: "Generate a list of 10 breaking news headlines from major US media outlets from the last 24-48 hours. For each, provide the headline, source, and full URL.",
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        headlines: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    headline: { type: Type.STRING },
+                                    source: { type: Type.STRING },
+                                    url: { type: Type.STRING },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        const parsed = JSON.parse(response.text.trim()) as { headlines: Omit<Headline, 'emoji' | 'publishedAt'>[] };
+        const headlinesWithDefaults = parsed.headlines.map(h => ({
+            ...h,
+            emoji: '⚡️',
+            publishedAt: new Date().toISOString(),
+        }));
+        setTickerHeadlines(headlinesWithDefaults);
+    } catch (err) {
+        console.error("Failed to fetch ticker headlines:", err);
+    }
+  };
 
   const fetchHeadlines = async () => {
     setHeadlinesLoading(true);
@@ -153,7 +192,7 @@ const App = () => {
 
       const response = await ai.current.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: "Generate a list of recent, distinct news headlines from US media. IMPORTANT: The current date is August 28, 2025. All articles must be published within the last 3 months of this date (i.e., from June 2025 to August 2025). Provide 5 headlines typical of left-leaning sources (like CNN, MSNBC) and 5 from right-leaning sources (like FOX News, Daily Wire). For each headline, provide the source, an emoji that reflects its political tone, and the publication date. Use moderate emojis (e.g., 😐, 🤔) for center-leaning stories, and more extreme or 'crazy' emojis (e.g., 🤯, 😡, 🤡) for stories that are highly partisan or sensational.",
+        contents: "Generate a list of recent, distinct news headlines from US media. IMPORTANT: The current date is August 28, 2025. All articles must be published within the last 3 months of this date (i.e., from June 2025 to August 2025). Provide 5 headlines typical of left-leaning sources (like CNN, MSNBC) and 5 from right-leaning sources (like FOX News, Daily Wire). For each headline, provide the source, the full URL to the article, an emoji that reflects its political tone, and the publication date. Use moderate emojis (e.g., 😐, 🤔) for center-leaning stories, and more extreme or 'crazy' emojis (e.g., 🤯, 😡, 🤡) for highly partisan or sensational stories.",
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -166,6 +205,7 @@ const App = () => {
                   properties: {
                     headline: { type: Type.STRING },
                     source: { type: Type.STRING },
+                    url: { type: Type.STRING },
                     emoji: { type: Type.STRING, description: "A single emoji representing the tone." },
                     publishedAt: { type: Type.STRING, description: "The publication date of the article, ideally in ISO format."}
                   }
@@ -179,6 +219,7 @@ const App = () => {
                   properties: {
                     headline: { type: Type.STRING },
                     source: { type: Type.STRING },
+                    url: { type: Type.STRING },
                     emoji: { type: Type.STRING, description: "A single emoji representing the tone." },
                     publishedAt: { type: Type.STRING, description: "The publication date of the article, ideally in ISO format."}
                   }
@@ -198,7 +239,7 @@ const App = () => {
           try {
               return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
           } catch (e) {
-              return 0; // Don't sort if dates are invalid
+              return 0; 
           }
       });
       
@@ -232,9 +273,9 @@ const App = () => {
     }
   };
 
-  const getAnalysis = async (topic: string) => {
+  const getAnalysis = async (headline: Headline) => {
     setLoading(true);
-    setLoadingMessage("Initializing analysis...");
+    setLoadingMessage("Analyzing perspective...");
     setError(null);
     setAnalysis(null);
     stopSpeech();
@@ -242,120 +283,31 @@ const App = () => {
 
     try {
       if (!ai.current) throw new Error("AI client not initialized.");
-
-      // Step 1: Find the articles using Google Search
-      setLoadingMessage("Finding relevant articles...");
-      const searchPrompt = `
-        Find two representative news articles for the topic: "${topic}".
-        1. One article should be from a source generally considered right-leaning in the US.
-        2. The other article should be from a source generally considered left-leaning in the US.
-        For each article, provide the title, the full URL, the source name, and the publication date.
-        Your response must be a single, valid JSON object.`;
       
-      const searchResponse = await ai.current.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: searchPrompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
-
-      const parsedResponse = safeParseJson<any>(searchResponse.text);
-
-      let rightWingArticle: any, leftWingArticle: any;
-
-      const normalizeArticle = (article: any) => {
-          if (!article) return null;
-          // The AI sometimes returns publication_date. Normalize it.
-          const publishedAt = article.publishedAt || article.publication_date;
-          if (!publishedAt) {
-              console.warn("Article missing publication date:", article);
-          }
-          return {
-              ...article,
-              publishedAt: publishedAt || new Date().toISOString(), // Fallback to now if date is missing
-          };
-      };
-
-      if (parsedResponse.rightWingArticle && parsedResponse.leftWingArticle) {
-          rightWingArticle = normalizeArticle(parsedResponse.rightWingArticle);
-          leftWingArticle = normalizeArticle(parsedResponse.leftWingArticle);
-      } else if (parsedResponse.articles && parsedResponse.articles.length >= 2) {
-          setLoadingMessage("Classifying article perspectives...");
-          const articlesToClassify = parsedResponse.articles.slice(0, 2);
-          
-          const classifyPrompt = `
-              Given the following two articles, identify which one is from a right-leaning source.
-              Article A: { "title": "${articlesToClassify[0].title}", "source": "${articlesToClassify[0].source}" }
-              Article B: { "title": "${articlesToClassify[1].title}", "source": "${articlesToClassify[1].source}" }
-  
-              Your response MUST be a single, valid JSON object with one key: "rightWingArticleSource". The value should be the exact source name of the right-leaning article (e.g., "Fox News").`;
-          
-          const classifyResponse = await ai.current.models.generateContent({
-              model: "gemini-2.5-flash",
-              contents: classifyPrompt,
-              config: {
-                  responseMimeType: "application/json",
-                  responseSchema: {
-                      type: Type.OBJECT,
-                      properties: {
-                          rightWingArticleSource: { type: Type.STRING, description: "The exact source name of the right-leaning article." }
-                      },
-                      required: ["rightWingArticleSource"]
-                  }
-              }
-          });
-          
-          const classification = safeParseJson<{rightWingArticleSource: string}>(classifyResponse.text);
-          const rightSource = classification.rightWingArticleSource;
-
-          const articleA = articlesToClassify[0];
-          const articleB = articlesToClassify[1];
-
-          if (articleA.source === rightSource) {
-              rightWingArticle = normalizeArticle(articleA);
-              leftWingArticle = normalizeArticle(articleB);
-          } else {
-              rightWingArticle = normalizeArticle(articleB);
-              leftWingArticle = normalizeArticle(articleA);
-          }
-      }
-
-      if (
-        !rightWingArticle ||
-        !leftWingArticle ||
-        !rightWingArticle.title ||
-        !leftWingArticle.title
-      ) {
-        console.error("The AI failed to structure its response correctly or find two distinct articles. Raw Response:", searchResponse.text);
-        throw new Error("The AI could not find suitable left and right-leaning articles for this topic. Please try a different headline.");
-      }
-
-
-      // Step 2: Analyze the articles
-      setLoadingMessage("Analyzing perspectives...");
       const analysisPrompt = `
-        Analyze the news topic "${topic}" based on the two provided articles.
+        Analyze the news article provided below.
 
-        Right-Leaning Article:
-        - Title: ${rightWingArticle.title}
-        - Source: ${rightWingArticle.source}
-        - URL: ${rightWingArticle.url}
+        Article to Analyze:
+        - Title: ${headline.headline}
+        - Source: ${headline.source}
+        - URL: ${headline.url}
 
-        Left-Leaning Article:
-        - Title: ${leftWingArticle.title}
-        - Source: ${leftWingArticle.source}
-        - URL: ${leftWingArticle.url}
+        Perform the following analysis and provide your response as a single, valid JSON object:
 
-        Perform the following analysis:
-        1. For the right-leaning article: Write a summary of its main arguments and identify its political 'spin' or narrative framing.
-        2. For the left-leaning article: Write a summary of its main points and describe how it portrays the right-wing perspective on the topic.
-        3. Distill and list the key 'talking points' from the left-leaning perspective that challenge or counter the right-wing narrative.
-        4. Distill and list key 'talking points' from a socialist perspective, critiquing both mainstream narratives by focusing on class, labor, capitalism, or systemic issues.
-        5. Assign a 'spectrumScore' from -10 (very liberal/left) to +10 (very conservative/right), where 0 is neutral, based on the topic's general framing in media.
-        6. Provide a brief 'spectrumJustification' for the score.
-
-        Your response must be a single, valid JSON object.`;
+        1.  **Category Tag**: Classify the article's topic into one of the following: "National News", "World News", "Politics", "Technology", "Business", "Culture", or "Local News".
+        2.  **Popularity Analysis**: Estimate the article's reach and popularity (score: "Low", "Medium", "High", or "Viral") and provide a brief justification for your score based on the source and topic.
+        3.  **Edited Status**: Analyze the content for any indications that the article was significantly edited or updated after its initial publication. Note the status (true/false) and provide reasoning, such as finding phrases like "This story has been updated".
+        4.  **Right-Wing Perspective**:
+            -   Provide a 'summary' of how a conservative or right-leaning individual would likely interpret the key information in this article.
+            -   List the key 'talkingPoints' they would derive from it.
+        5.  **Left-Wing Perspective**:
+            -   Provide a 'summary' of how a liberal or left-leaning individual would likely interpret the key information in this article.
+            -   List the key 'talkingPoints' they would derive from it.
+        6.  **Socialist Perspective**:
+            -   Provide a 'summary' of how a socialist would critique the article's framing, focusing on class, labor, capitalism, or systemic issues.
+            -   List the key 'talkingPoints' from this perspective.
+        7.  **Spectrum Score**: Assign a 'spectrumScore' from -10 (very liberal/left) to +10 (very conservative/right) for the article's own bias.
+        8.  **Spectrum Justification**: Provide a brief 'spectrumJustification' for the score.`;
         
       const analysisResponse = await ai.current.models.generateContent({
         model: "gemini-2.5-flash",
@@ -365,22 +317,42 @@ const App = () => {
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-                rightWingArticleAnalysis: {
+                category: { type: Type.STRING },
+                popularity: {
+                    type: Type.OBJECT,
+                    properties: {
+                        score: { type: Type.STRING },
+                        justification: { type: Type.STRING },
+                    }
+                },
+                wasEdited: {
+                    type: Type.OBJECT,
+                    properties: {
+                        status: { type: Type.BOOLEAN },
+                        reasoning: { type: Type.STRING },
+                    }
+                },
+                rightWingPerspective: {
                     type: Type.OBJECT,
                     properties: {
                         summary: { type: Type.STRING },
-                        spinAnalysis: { type: Type.STRING },
+                        talkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
                     }
                 },
-                leftWingArticleAnalysis: {
+                leftWingPerspective: {
                     type: Type.OBJECT,
                     properties: {
                         summary: { type: Type.STRING },
-                        portrayalOfRight: { type: Type.STRING },
+                        talkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
                     }
                 },
-                leftistTalkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
-                socialistTalkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+                socialistPerspective: {
+                    type: Type.OBJECT,
+                    properties: {
+                        summary: { type: Type.STRING },
+                        talkingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    }
+                },
                 spectrumScore: { type: Type.NUMBER },
                 spectrumJustification: { type: Type.STRING },
             }
@@ -388,25 +360,17 @@ const App = () => {
         },
       });
 
-      const analysisData = safeParseJson<AnalysisDataResponse>(analysisResponse.text);
+      const analysisData = safeParseJson<any>(analysisResponse.text);
 
-      // Step 3: Combine results and set state
       const finalResult: AnalysisResult = {
-        topic: topic,
-        rightWingArticle: {
-          ...rightWingArticle,
-          summary: analysisData.rightWingArticleAnalysis.summary,
-          spinAnalysis: analysisData.rightWingArticleAnalysis.spinAnalysis,
+        topic: headline.headline,
+        article: {
+          title: headline.headline,
+          url: headline.url,
+          source: headline.source,
+          publishedAt: headline.publishedAt,
         },
-        leftWingArticle: {
-          ...leftWingArticle,
-          summary: analysisData.leftWingArticleAnalysis.summary,
-          portrayalOfRight: analysisData.leftWingArticleAnalysis.portrayalOfRight,
-        },
-        leftistTalkingPoints: analysisData.leftistTalkingPoints,
-        socialistTalkingPoints: analysisData.socialistTalkingPoints,
-        spectrumScore: analysisData.spectrumScore,
-        spectrumJustification: analysisData.spectrumJustification,
+        ...analysisData
       };
 
       setAnalysis(finalResult);
@@ -455,14 +419,13 @@ const App = () => {
     }
 
     if (globalSpeechState === 'stopped' && analysis) {
-      stopSpeech(); // Ensure a completely clean state before starting
+      stopSpeech(); 
 
       const speechQueue: { cardId: string; text: string }[] = [];
 
       const addToQueue = (cardId: string, text: string | undefined | null, shouldSplit = false) => {
           if (!text || text.trim().length === 0) return;
           if (shouldSplit) {
-              // Split into sentences but keep delimiters.
               const sentences = text.match(/[^.!?]+[.!?]?/g) || [text];
               sentences.forEach(sentence => {
                   const trimmed = sentence.trim();
@@ -473,27 +436,26 @@ const App = () => {
           }
       };
       
-      addToQueue('right-wing', 'Right-Wing Perspective.');
-      addToQueue('right-wing', `Title: ${analysis.rightWingArticle.title}`);
-      addToQueue('right-wing', `Source: ${analysis.rightWingArticle.source}`);
-      addToQueue('right-wing', 'Summary:');
-      addToQueue('right-wing', analysis.rightWingArticle.summary, true);
-      addToQueue('right-wing', 'Narrative and Spin Analysis:');
-      addToQueue('right-wing', analysis.rightWingArticle.spinAnalysis, true);
-      
-      addToQueue('left-wing', 'Left-Wing Perspective.');
-      addToQueue('left-wing', `Title: ${analysis.leftWingArticle.title}`);
-      addToQueue('left-wing', `Source: ${analysis.leftWingArticle.source}`);
-      addToQueue('left-wing', 'Summary:');
-      addToQueue('left-wing', analysis.leftWingArticle.summary, true);
-      addToQueue('left-wing', 'Portrayal of Right-Wing View:');
-      addToQueue('left-wing', analysis.leftWingArticle.portrayalOfRight, true);
+      addToQueue('article-details', `Analyzing the article: ${analysis.article.title}.`);
+      addToQueue('article-details', `Source: ${analysis.article.source}.`);
+      addToQueue('article-details', `Category: ${analysis.category}.`);
+      addToQueue('article-details', `Popularity Score: ${analysis.popularity.score}.`);
+      addToQueue('article-details', analysis.popularity.justification, true);
 
-      addToQueue('leftist-points', 'Leftist Talking Points.');
-      analysis.leftistTalkingPoints.forEach(point => addToQueue('leftist-points', point, true));
+      addToQueue('left-wing', 'Left-Wing Perspective.');
+      addToQueue('left-wing', analysis.leftWingPerspective.summary, true);
+      addToQueue('left-wing', "Key talking points include:");
+      analysis.leftWingPerspective.talkingPoints.forEach(point => addToQueue('left-wing', point, true));
       
-      addToQueue('socialist-points', 'Socialist Talking Points.');
-      analysis.socialistTalkingPoints.forEach(point => addToQueue('socialist-points', point, true));
+      addToQueue('right-wing', 'Right-Wing Perspective.');
+      addToQueue('right-wing', analysis.rightWingPerspective.summary, true);
+      addToQueue('right-wing', "Key talking points include:");
+      analysis.rightWingPerspective.talkingPoints.forEach(point => addToQueue('right-wing', point, true));
+      
+      addToQueue('socialist', 'Socialist Perspective.');
+      addToQueue('socialist', analysis.socialistPerspective.summary, true);
+      addToQueue('socialist', "Key talking points include:");
+      analysis.socialistPerspective.talkingPoints.forEach(point => addToQueue('socialist', point, true));
 
       const preferredVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
 
@@ -523,7 +485,7 @@ const App = () => {
         const speakNext = () => {
             const { utterances, currentIndex } = speechQueueRef.current;
             if (currentIndex >= utterances.length) {
-                stopSpeech(); // All finished
+                stopSpeech(); 
                 return;
             }
 
@@ -536,21 +498,42 @@ const App = () => {
 
             currentUtterance.onend = () => {
                 speechQueueRef.current.currentIndex++;
-                setTimeout(speakNext, 50); // Small delay between utterances for stability
+                setTimeout(speakNext, 50); 
             };
             
             synth.speak(currentUtterance);
         };
         
-        // Defensively reset the synth engine before starting
         synth.cancel();
 
         setGlobalSpeechState('playing');
-        setTimeout(speakNext, 100); // Start the chain after a brief delay
+        setTimeout(speakNext, 100); 
       }
     }
   };
   
+  const NewsTicker = ({ headlines, onHeadlineClick }: { headlines: Headline[]; onHeadlineClick: (headline: Headline) => void; }) => {
+    if (!headlines || headlines.length === 0) {
+        return null;
+    }
+
+    // Duplicate headlines for seamless scrolling effect
+    const tickerItems = [...headlines, ...headlines];
+
+    return (
+        <div className="news-ticker-container" aria-label="Latest News Ticker">
+            <div className="ticker-content">
+                {tickerItems.map((item, index) => (
+                    <button key={index} className="ticker-item" onClick={() => onHeadlineClick(item)}>
+                        <span className="ticker-source">{item.source}</span>
+                        <span className="ticker-headline">{item.headline}</span>
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+  };
+
   const HeadlinesView = () => (
     <>
         {latestHeadlines && latestHeadlines.length > 0 && (
@@ -559,7 +542,7 @@ const App = () => {
                 <ul>
                     {latestHeadlines.map((item, index) => (
                         <li key={`latest-${index}`}>
-                            <button className="headline-button latest-headline-button" onClick={() => getAnalysis(item.headline)}>
+                            <button className="headline-button latest-headline-button" onClick={() => getAnalysis(item)}>
                                 <span className="headline-emoji">{item.emoji}</span>
                                 <div className="headline-content">
                                     <span className="headline-text">{item.headline}</span>
@@ -581,7 +564,7 @@ const App = () => {
                     <ul>
                         {headlines?.leftHeadlines.map((item, index) => (
                             <li key={`left-${index}`}>
-                                <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
+                                <button className="headline-button" onClick={() => getAnalysis(item)}>
                                     <span className="headline-emoji">{item.emoji}</span>
                                     <div className="headline-content">
                                         <span className="headline-text">{item.headline}</span>
@@ -600,7 +583,7 @@ const App = () => {
                     <ul>
                         {headlines?.rightHeadlines.map((item, index) => (
                             <li key={`right-${index}`}>
-                                <button className="headline-button" onClick={() => getAnalysis(item.headline)}>
+                                <button className="headline-button" onClick={() => getAnalysis(item)}>
                                     <span className="headline-emoji">{item.emoji}</span>
                                     <div className="headline-content">
                                         <span className="headline-text">{item.headline}</span>
@@ -648,11 +631,28 @@ const App = () => {
                 </button>
             </div>
         </div>
+
         <div className={`card topic-card ${currentlySpeakingCard === 'topic' ? 'is-speaking' : ''}`}>
             <div className="card-header">
                 <h2>{analysis!.topic}</h2>
             </div>
         </div>
+
+        <div className={`card article-details-card ${currentlySpeakingCard === 'article-details' ? 'is-speaking' : ''}`}>
+            <div className="card-header">
+                <h2>Article Analysis</h2>
+            </div>
+            <h3><a href={analysis!.article.url} target="_blank" rel="noopener noreferrer">{analysis!.article.title}</a></h3>
+            <p className="article-date"><strong>Source:</strong> {analysis!.article.source} | <strong>Published:</strong> {new Date(analysis!.article.publishedAt).toLocaleDateString()}</p>
+            <div className="analytics-grid">
+                <div><strong>Category:</strong> {analysis!.category}</div>
+                <div><strong>Popularity:</strong> {analysis!.popularity.score}</div>
+                <div><strong>Edited:</strong> {analysis!.wasEdited.status ? 'Yes' : 'No'}</div>
+            </div>
+            <p className="analytics-justification"><strong>Popularity Rationale:</strong> {analysis!.popularity.justification}</p>
+            <p className="analytics-justification"><strong>Edit Status Rationale:</strong> {analysis!.wasEdited.reasoning}</p>
+        </div>
+
         <div className={`card spectrum-meter ${currentlySpeakingCard === 'spectrum' ? 'is-speaking' : ''}`}>
             <div className="card-header">
                 <h2>Political Spectrum Score</h2>
@@ -667,43 +667,31 @@ const App = () => {
             </div>
             <p className="spectrum-justification">{analysis!.spectrumJustification}</p>
         </div>
-        <div className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
-            <div className="card-header">
-                <h2>Right-Wing Perspective</h2>
+
+        <div className="perspectives-container">
+            <div className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
+                <div className="card-header"><h2>Left-Wing Perspective</h2></div>
+                <h4>Summary</h4>
+                <p>{analysis!.leftWingPerspective.summary}</p>
+                <h4>Talking Points</h4>
+                <ul>{analysis!.leftWingPerspective.talkingPoints.map((point, index) => <li key={`lw-${index}`}>{point}</li>)}</ul>
             </div>
-            <h3><a href={analysis!.rightWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis!.rightWingArticle.title}</a></h3>
-            <p className="article-date"><strong>Source:</strong> {analysis!.rightWingArticle.source} | <strong>Published:</strong> {new Date(analysis!.rightWingArticle.publishedAt).toLocaleDateString()}</p>
-            <h4>Summary</h4>
-            <p>{analysis!.rightWingArticle.summary}</p>
-            <h4>Narrative and Spin Analysis</h4>
-            <p>{analysis!.rightWingArticle.spinAnalysis}</p>
-        </div>
-        <div className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
-            <div className="card-header">
-                <h2>Left-Wing Perspective</h2>
+
+            <div className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
+                <div className="card-header"><h2>Right-Wing Perspective</h2></div>
+                <h4>Summary</h4>
+                <p>{analysis!.rightWingPerspective.summary}</p>
+                <h4>Talking Points</h4>
+                <ul>{analysis!.rightWingPerspective.talkingPoints.map((point, index) => <li key={`rw-${index}`}>{point}</li>)}</ul>
             </div>
-            <h3><a href={analysis!.leftWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis!.leftWingArticle.title}</a></h3>
-            <p className="article-date"><strong>Source:</strong> {analysis!.leftWingArticle.source} | <strong>Published:</strong> {new Date(analysis!.leftWingArticle.publishedAt).toLocaleDateString()}</p>
-            <h4>Summary</h4>
-            <p>{analysis!.leftWingArticle.summary}</p>
-            <h4>Portrayal of Right-Wing View</h4>
-            <p>{analysis!.leftWingArticle.portrayalOfRight}</p>
-        </div>
-        <div className={`card talking-points left-wing-card ${currentlySpeakingCard === 'leftist-points' ? 'is-speaking' : ''}`}>
-             <div className="card-header">
-                <h2>Leftist Talking Points</h2>
+
+            <div className={`card socialist-card ${currentlySpeakingCard === 'socialist' ? 'is-speaking' : ''}`}>
+                <div className="card-header"><h2>Socialist Perspective</h2></div>
+                <h4>Summary</h4>
+                <p>{analysis!.socialistPerspective.summary}</p>
+                <h4>Talking Points</h4>
+                <ul>{analysis!.socialistPerspective.talkingPoints.map((point, index) => <li key={`s-${index}`}>{point}</li>)}</ul>
             </div>
-            <ul>
-                {analysis!.leftistTalkingPoints.map((point, index) => <li key={index}>{point}</li>)}
-            </ul>
-        </div>
-        <div className={`card talking-points socialist-card ${currentlySpeakingCard === 'socialist-points' ? 'is-speaking' : ''}`}>
-             <div className="card-header">
-                <h2>Socialist Talking Points</h2>
-            </div>
-            <ul>
-                {analysis!.socialistTalkingPoints.map((point, index) => <li key={index}>{point}</li>)}
-            </ul>
         </div>
     </div>
   );
@@ -715,6 +703,8 @@ const App = () => {
         <p>See the narratives from all sides. Select a headline to get a balanced analysis of the different perspectives.</p>
       </header>
       
+      <NewsTicker headlines={tickerHeadlines} onHeadlineClick={getAnalysis} />
+
       {loading && (
         <div className="loader-container">
             <div className="loader"></div>

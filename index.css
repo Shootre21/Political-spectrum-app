@@ -1,3 +1,4 @@
+
 :root {
   --background-color: #f8f9fa;
   --text-color: #212529;
@@ -81,6 +82,65 @@ header p {
   max-width: 60ch;
   margin-top: 0.5rem;
 }
+
+/* News Ticker */
+.news-ticker-container {
+    width: 100%;
+    background-color: var(--header-color);
+    color: #fff;
+    padding: 0.5rem 0;
+    overflow: hidden;
+    white-space: nowrap;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    margin-bottom: 2rem;
+}
+
+.ticker-content {
+    display: inline-block;
+    animation: scroll-left 90s linear infinite;
+}
+
+.news-ticker-container:hover .ticker-content {
+    animation-play-state: paused;
+}
+
+.ticker-item {
+    display: inline-flex;
+    align-items: center;
+    margin: 0 1.5rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    background: none;
+    border: none;
+    color: #fff;
+    font-family: var(--font-family);
+}
+
+.ticker-item:hover .ticker-headline {
+    text-decoration: underline;
+}
+
+.ticker-source {
+    font-weight: 700;
+    margin-right: 0.75rem;
+    opacity: 0.8;
+    padding-right: 0.75rem;
+    border-right: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.ticker-headline {
+    font-weight: 400;
+}
+
+@keyframes scroll-left {
+    0% {
+        transform: translateX(0%);
+    }
+    100% {
+        transform: translateX(-50%);
+    }
+}
+
 
 /* Headlines Section */
 .headlines-section {
@@ -338,7 +398,7 @@ header p {
   .results-container {
     grid-template-columns: repeat(2, 1fr);
   }
-  .topic-card, .spectrum-meter, .talking-points, .results-controls {
+  .topic-card, .spectrum-meter, .article-details-card, .perspectives-container, .results-controls {
     grid-column: 1 / -1;
   }
 }
@@ -422,18 +482,48 @@ header p {
   border-bottom-color: var(--neutral-border);
 }
 
-.topic-card p {
-    text-align: center;
-}
-
 .topic-card h2 {
   color: var(--neutral-header);
 }
 
-.talking-points .card-header {
-    justify-content: flex-start;
+.article-details-card {
+  border-top: 4px solid var(--neutral-border);
 }
 
+.article-details-card h2 {
+    color: var(--neutral-header);
+}
+
+.analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.95rem;
+}
+
+.analytics-justification {
+    font-size: 0.9rem;
+    background-color: #f8f9fa;
+    padding: 0.5rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+
+.perspectives-container {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 2rem;
+    width: 100%;
+}
+
+@media (min-width: 1024px) {
+    .perspectives-container {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
 
 .right-wing-card {
   border-top: 4px solid var(--right-wing-border);
