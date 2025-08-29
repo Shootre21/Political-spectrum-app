@@ -43,10 +43,12 @@ const App = () => {
   const [headlinesLoading, setHeadlinesLoading] = useState<boolean>(true);
   const [headlinesError, setHeadlinesError] = useState<string | null>(null);
 
-  // State for improved speech synthesis
-  const [speechState, setSpeechState] = useState<'stopped' | 'playing' | 'paused'>('stopped');
-  const [activeCard, setActiveCard] = useState<string | null>(null);
+  // State for global speech synthesis
+  const [globalSpeechState, setGlobalSpeechState] = useState<'stopped' | 'playing' | 'paused'>('stopped');
+  const [currentlySpeakingCard, setCurrentlySpeakingCard] = useState<string | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const utteranceQueueRef = useRef<{utterance: SpeechSynthesisUtterance, cardId: string}[]>([]);
+  const currentUtteranceIndexRef = useRef<number>(0);
 
   const ai = useRef<GoogleGenAI | null>(null);
 
@@ -140,11 +142,7 @@ const App = () => {
     setLoading(true);
     setError(null);
     setAnalysis(null);
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    setSpeechState('stopped');
-    setActiveCard(null);
+    stopSpeech();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     try {
@@ -225,77 +223,107 @@ const App = () => {
     }
   };
   
-  const resetView = () => {
-    setAnalysis(null);
-    setError(null);
+  const stopSpeech = () => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-    setSpeechState('stopped');
-    setActiveCard(null);
+    setGlobalSpeechState('stopped');
+    setCurrentlySpeakingCard(null);
+    currentUtteranceIndexRef.current = 0;
+    utteranceQueueRef.current = [];
   };
 
-  const handleSpeech = (perspective: 'right' | 'left', article: ArticleAnalysis) => {
+  const resetView = () => {
+    setAnalysis(null);
+    setError(null);
+    stopSpeech();
+  };
+
+  const handleGlobalSpeech = () => {
     if (!('speechSynthesis' in window)) {
         setError("Sorry, your browser does not support text-to-speech.");
         return;
     }
-    
-    const isCurrentCard = activeCard === perspective;
 
-    if (isCurrentCard && speechState === 'playing') {
+    if (globalSpeechState === 'playing') {
       window.speechSynthesis.pause();
-      setSpeechState('paused');
-      return;
-    }
-
-    if (isCurrentCard && speechState === 'paused') {
+      setGlobalSpeechState('paused');
+    } else if (globalSpeechState === 'paused') {
       window.speechSynthesis.resume();
-      setSpeechState('playing');
-      return;
-    }
+      setGlobalSpeechState('playing');
+    } else if (globalSpeechState === 'stopped' && analysis) {
+      // Before starting, cancel any lingering speech and reset our index.
+      // This ensures we start from a clean state.
+      window.speechSynthesis.cancel();
+      currentUtteranceIndexRef.current = 0;
 
-    window.speechSynthesis.cancel();
+      const textToSpeak = [
+        {
+          cardId: 'right-wing',
+          text: `Right-Wing Perspective. Title: ${analysis.rightWingArticle.title}. Source: ${analysis.rightWingArticle.source}. Summary: ${analysis.rightWingArticle.summary}. Narrative and Spin Analysis: ${analysis.rightWingArticle.spinAnalysis}`
+        },
+        {
+          cardId: 'left-wing',
+          text: `Left-Wing Perspective. Title: ${analysis.leftWingArticle.title}. Source: ${analysis.leftWingArticle.source}. Summary: ${analysis.leftWingArticle.summary}. Portrayal of Right-Wing View: ${analysis.leftWingArticle.portrayalOfRight}`
+        },
+        {
+          cardId: 'leftist-points',
+          text: `Leftist Talking Points. ${analysis.leftistTalkingPoints.join('. ')}`
+        },
+        {
+          cardId: 'socialist-points',
+          text: `Socialist Talking Points. ${analysis.socialistTalkingPoints.join('. ')}`
+        }
+      ];
 
-    const textParts = [
-      `Title: ${article.title}`,
-      `Source: ${article.source}`,
-      `Summary: ${article.summary}`,
-      `Analysis: ${article.spinAnalysis || article.portrayalOfRight}`
-    ];
-    
-    const preferredVoice = voices.find(voice => voice.name.includes('Google') && voice.lang.startsWith('en')) || voices.find(voice => voice.lang.startsWith('en-US') && voice.localService) || voices.find(voice => voice.lang.startsWith('en-US')) || null;
+      const preferredVoice = voices.find(voice => voice.name.includes('Google') && voice.lang === 'en-US') 
+        || voices.find(voice => voice.lang === 'en-US' && voice.localService) 
+        || voices.find(voice => voice.lang === 'en-US') 
+        || voices.find(voice => voice.lang.startsWith('en')) 
+        || null;
 
-    const utterances = textParts.map(part => {
-      const utterance = new SpeechSynthesisUtterance(part);
-      if (preferredVoice) {
-        utterance.voice = preferredVoice;
-      }
-      utterance.rate = 0.95;
-      utterance.pitch = 1.0;
-      return utterance;
-    });
+      utteranceQueueRef.current = textToSpeak.map(item => {
+        const utterance = new SpeechSynthesisUtterance(item.text);
+        if (preferredVoice) utterance.voice = preferredVoice;
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+        return { utterance, cardId: item.cardId };
+      });
 
-    utterances.forEach((utterance, index) => {
-      if (index === utterances.length - 1) {
-        utterance.onend = () => {
-          setSpeechState('stopped');
-          setActiveCard(null);
+      const speakNext = () => {
+        if (currentUtteranceIndexRef.current >= utteranceQueueRef.current.length) {
+          stopSpeech();
+          return;
+        }
+
+        const currentItem = utteranceQueueRef.current[currentUtteranceIndexRef.current];
+        
+        currentItem.utterance.onstart = () => {
+          setCurrentlySpeakingCard(currentItem.cardId);
         };
-      }
-      
-      utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
-        console.error("Speech synthesis error:", event.error);
-        setSpeechState('stopped');
-        setActiveCard(null);
-        setError(`Speech synthesis failed: ${event.error}. Please try again or use a different browser.`);
+
+        currentItem.utterance.onend = () => {
+          currentUtteranceIndexRef.current++;
+          speakNext();
+        };
+
+        currentItem.utterance.onerror = (e) => {
+          console.error("Speech synthesis error:", e);
+          setError("An error occurred during speech synthesis.");
+          stopSpeech();
+        };
+
+        window.speechSynthesis.speak(currentItem.utterance);
       };
-
-      window.speechSynthesis.speak(utterance);
-    });
-
-    setSpeechState('playing');
-    setActiveCard(perspective);
+      
+      setGlobalSpeechState('playing');
+      
+      // A small delay helps prevent race conditions in some browsers where
+      // a `speak` command is issued too quickly after a `cancel`.
+      setTimeout(() => {
+        speakNext();
+      }, 100);
+    }
   };
   
   const SpeakerIcon = () => (
@@ -312,15 +340,14 @@ const App = () => {
     </svg>
   );
 
-  const getButtonContent = (perspective: 'right' | 'left') => {
-    const isCurrentCard = activeCard === perspective;
-    if (isCurrentCard && speechState === 'playing') {
-      return { Icon: PauseIcon, text: 'Pause' };
+  const getGlobalButtonContent = () => {
+    if (globalSpeechState === 'playing') {
+      return { Icon: PauseIcon, text: 'Pause Analysis' };
     }
-    if (isCurrentCard && speechState === 'paused') {
-      return { Icon: SpeakerIcon, text: 'Resume' };
+    if (globalSpeechState === 'paused') {
+      return { Icon: SpeakerIcon, text: 'Resume Analysis' };
     }
-    return { Icon: SpeakerIcon, text: 'Read Aloud' };
+    return { Icon: SpeakerIcon, text: 'Read Full Analysis' };
   };
 
   const SpectrumMeter = ({ score, justification }: { score: number; justification: string }) => {
@@ -409,7 +436,17 @@ const App = () => {
         
         {analysis && !loading && (
           <div className="results-container" aria-live="polite">
-            <button className="back-button" onClick={resetView}>← Back to Headlines</button>
+            <div className="results-controls">
+                <button className="back-button" onClick={resetView}>← Back to Headlines</button>
+                {(() => {
+                  const { Icon, text } = getGlobalButtonContent();
+                  return (
+                    <button className="global-read-aloud-button" onClick={handleGlobalSpeech} aria-label={text}>
+                       <Icon /> {text}
+                    </button>
+                  );
+                })()}
+            </div>
             <div className="card topic-card">
               <div className="card-header">
                 <h2>Topic</h2>
@@ -419,17 +456,9 @@ const App = () => {
 
             <SpectrumMeter score={analysis.spectrumScore} justification={analysis.spectrumJustification} />
 
-            <div className="card right-wing-card">
+            <div className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Right-Wing Perspective</h2>
-                {(() => {
-                  const { Icon, text } = getButtonContent('right');
-                  return (
-                    <button className="read-aloud-button" onClick={() => handleSpeech('right', analysis.rightWingArticle)} aria-label={`${text} right-wing perspective`}>
-                       <Icon /> {text}
-                    </button>
-                  );
-                })()}
               </div>
               <h3><a href={analysis.rightWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis.rightWingArticle.title}</a></h3>
               <p><strong>Source:</strong> {analysis.rightWingArticle.source}</p>
@@ -439,17 +468,9 @@ const App = () => {
               <p>{analysis.rightWingArticle.spinAnalysis}</p>
             </div>
 
-            <div className="card left-wing-card">
+            <div className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Left-Wing Perspective</h2>
-                {(() => {
-                  const { Icon, text } = getButtonContent('left');
-                  return (
-                    <button className="read-aloud-button" onClick={() => handleSpeech('left', analysis.leftWingArticle)} aria-label={`${text} left-wing perspective`}>
-                       <Icon /> {text}
-                    </button>
-                  );
-                })()}
               </div>
               <h3><a href={analysis.leftWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis.leftWingArticle.title}</a></h3>
               <p><strong>Source:</strong> {analysis.leftWingArticle.source}</p>
@@ -459,7 +480,7 @@ const App = () => {
               <p>{analysis.leftWingArticle.portrayalOfRight}</p>
             </div>
 
-            <div className="card left-wing-card talking-points">
+            <div className={`card left-wing-card talking-points ${currentlySpeakingCard === 'leftist-points' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Leftist Talking Points</h2>
               </div>
@@ -470,7 +491,7 @@ const App = () => {
               </ul>
             </div>
 
-            <div className="card socialist-card talking-points">
+            <div className={`card socialist-card talking-points ${currentlySpeakingCard === 'socialist-points' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Socialist Talking Points</h2>
               </div>

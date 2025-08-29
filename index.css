@@ -163,6 +163,15 @@ header p {
     font-style: italic;
 }
 
+.results-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
 
 .back-button {
   font-family: var(--font-family);
@@ -175,12 +184,30 @@ header p {
   color: var(--text-color);
   cursor: pointer;
   transition: background-color 0.2s ease-in-out;
-  grid-column: 1 / -1;
-  justify-self: start;
 }
 
 .back-button:hover {
     background-color: #e9ecef;
+}
+
+.global-read-aloud-button {
+  font-family: var(--font-family);
+  font-size: 1rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 8px;
+  background-color: var(--button-bg);
+  color: var(--button-text);
+  cursor: pointer;
+  transition: background-color 0.2s ease-in-out;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.global-read-aloud-button:hover {
+    background-color: var(--button-hover-bg);
 }
 
 
@@ -221,7 +248,7 @@ header p {
   .results-container {
     grid-template-columns: repeat(2, 1fr);
   }
-  .topic-card, .spectrum-meter, .talking-points {
+  .topic-card, .spectrum-meter, .talking-points, .results-controls {
     grid-column: 1 / -1;
   }
 }
@@ -234,6 +261,11 @@ header p {
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
+  transition: box-shadow 0.3s ease-in-out;
+}
+
+.card.is-speaking {
+  box-shadow: 0 0 0 3px var(--button-bg);
 }
 
 .card-header {
@@ -251,26 +283,6 @@ header p {
   padding: 0;
   border: none;
 }
-
-.read-aloud-button {
-  background: none;
-  border: 1px solid var(--border-color);
-  color: var(--text-color);
-  padding: 0.4rem 0.8rem;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: var(--font-family);
-  font-size: 0.9rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  transition: background-color 0.2s, color 0.2s;
-}
-
-.read-aloud-button:hover {
-  background-color: #e9ecef;
-}
-
 
 .card h3 {
   font-size: 1.2rem;
