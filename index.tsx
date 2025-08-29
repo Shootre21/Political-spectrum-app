@@ -8,6 +8,7 @@ interface ArticleAnalysis {
   title: string;
   url: string;
   source: string;
+  publishedAt: string;
   summary: string;
   spinAnalysis?: string;
   portrayalOfRight?: string;
@@ -27,6 +28,7 @@ interface Headline {
     headline: string;
     source: string;
     emoji: string;
+    publishedAt: string;
 }
 
 interface Headlines {
@@ -40,6 +42,7 @@ const App = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [headlines, setHeadlines] = useState<Headlines | null>(null);
+  const [latestHeadlines, setLatestHeadlines] = useState<Headline[] | null>(null);
   const [headlinesLoading, setHeadlinesLoading] = useState<boolean>(true);
   const [headlinesError, setHeadlinesError] = useState<string | null>(null);
 
@@ -47,10 +50,11 @@ const App = () => {
   const [globalSpeechState, setGlobalSpeechState] = useState<'stopped' | 'playing' | 'paused'>('stopped');
   const [currentlySpeakingCard, setCurrentlySpeakingCard] = useState<string | null>(null);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const utteranceQueueRef = useRef<{utterance: SpeechSynthesisUtterance, cardId: string}[]>([]);
-  const currentUtteranceIndexRef = useRef<number>(0);
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
 
   const ai = useRef<GoogleGenAI | null>(null);
+  const speechQueueRef = useRef<{ utterances: {utterance: SpeechSynthesisUtterance, cardId: string}[], currentIndex: number }>({ utterances: [], currentIndex: 0 });
+
 
   useEffect(() => {
     if (API_KEY) {
@@ -62,6 +66,30 @@ const App = () => {
             const availableVoices = window.speechSynthesis.getVoices();
             if (availableVoices.length > 0) {
                 setVoices(availableVoices);
+                
+                // Intelligently select the best available voice as default
+                const getBestVoice = (vcs: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null => {
+                    if (!vcs || vcs.length === 0) return null;
+                    const lang = 'en-US';
+                    const premiumNames = ['Google US English', 'Microsoft David - English (United States)', 'Samantha', 'Alex'];
+                    for (const name of premiumNames) {
+                        const voice = vcs.find(v => v.name === name && v.lang === lang);
+                        if (voice) return voice;
+                    }
+                    const localVoice = vcs.find(v => v.lang === lang && v.localService);
+                    if (localVoice) return localVoice;
+                    const anyUSVoice = vcs.find(v => v.lang === lang);
+                    if (anyUSVoice) return anyUSVoice;
+                    return vcs.find(v => v.lang.startsWith('en')) || null;
+                };
+
+                const bestVoice = getBestVoice(availableVoices);
+                if (bestVoice) {
+                    setSelectedVoiceURI(bestVoice.voiceURI);
+                } else if (availableVoices.length > 0) {
+                    setSelectedVoiceURI(availableVoices[0].voiceURI);
+                }
+
                 window.speechSynthesis.onvoiceschanged = null; 
             }
         }
@@ -92,7 +120,7 @@ const App = () => {
 
       const response = await ai.current.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: "Generate a list of recent, distinct news headlines from US media. Provide 5 headlines typical of left-leaning sources (like CNN, MSNBC) and 5 from right-leaning sources (like FOX News, Daily Wire). For each headline, provide the source and an emoji that reflects its political tone. Use moderate emojis (e.g., 😐, 🤔) for center-leaning stories, and more extreme or 'crazy' emojis (e.g., 🤯, 😡, 🤡) for stories that are highly partisan or sensational.",
+        contents: "Generate a list of recent, distinct news headlines from US media. IMPORTANT: The current date is August 28, 2025. All articles must be published within the last 3 months of this date (i.e., from June 2025 to August 2025). Provide 5 headlines typical of left-leaning sources (like CNN, MSNBC) and 5 from right-leaning sources (like FOX News, Daily Wire). For each headline, provide the source, an emoji that reflects its political tone, and the publication date. Use moderate emojis (e.g., 😐, 🤔) for center-leaning stories, and more extreme or 'crazy' emojis (e.g., 🤯, 😡, 🤡) for stories that are highly partisan or sensational.",
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -105,7 +133,8 @@ const App = () => {
                   properties: {
                     headline: { type: Type.STRING },
                     source: { type: Type.STRING },
-                    emoji: { type: Type.STRING, description: "A single emoji representing the tone." }
+                    emoji: { type: Type.STRING, description: "A single emoji representing the tone." },
+                    publishedAt: { type: Type.STRING, description: "The publication date of the article, ideally in ISO format."}
                   }
                 },
                 description: "5 headlines from left-leaning sources with source and emoji."
@@ -117,7 +146,8 @@ const App = () => {
                   properties: {
                     headline: { type: Type.STRING },
                     source: { type: Type.STRING },
-                    emoji: { type: Type.STRING, description: "A single emoji representing the tone." }
+                    emoji: { type: Type.STRING, description: "A single emoji representing the tone." },
+                    publishedAt: { type: Type.STRING, description: "The publication date of the article, ideally in ISO format."}
                   }
                 },
                 description: "5 headlines from right-leaning sources with source and emoji."
@@ -128,8 +158,39 @@ const App = () => {
       });
 
       const responseText = response.text.trim();
-      const parsedJson = JSON.parse(responseText);
-      setHeadlines(parsedJson);
+      const parsedJson = JSON.parse(responseText) as Headlines;
+      
+      const allHeadlines = [...parsedJson.leftHeadlines, ...parsedJson.rightHeadlines];
+      allHeadlines.sort((a, b) => {
+          try {
+              return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+          } catch (e) {
+              return 0; // Don't sort if dates are invalid
+          }
+      });
+      
+      const latest = allHeadlines.slice(0, 2);
+      setLatestHeadlines(latest);
+
+      const latestHeadlinesSet = new Set(latest.map(h => h.headline));
+      const remainingLeft = parsedJson.leftHeadlines.filter(h => !latestHeadlinesSet.has(h.headline));
+      const remainingRight = parsedJson.rightHeadlines.filter(h => !latestHeadlinesSet.has(h.headline));
+
+      const sortHeadlines = (headlines: Headline[]) => {
+          return headlines.sort((a, b) => {
+              try {
+                  return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+              } catch (e) {
+                  return 0;
+              }
+          });
+      };
+
+      setHeadlines({
+          leftHeadlines: sortHeadlines(remainingLeft),
+          rightHeadlines: sortHeadlines(remainingRight)
+      });
+
     } catch (err) {
       console.error("Error fetching headlines:", err);
       setHeadlinesError("Failed to fetch headlines.");
@@ -152,8 +213,8 @@ const App = () => {
         Analyze the following news topic: "${topic}".
 
         For this topic, please perform the following actions using Google Search for grounding:
-        1.  Find one representative news article from a source generally considered right-leaning.
-        2.  Find one representative news article from a source generally considered left-leaning that covers the same event or topic.
+        1.  Find one representative news article from a source generally considered right-leaning. Include its publication date.
+        2.  Find one representative news article from a source generally considered left-leaning that covers the same event or topic. Include its publication date.
         3.  Analyze the right-leaning article to summarize its main arguments and identify its political 'spin' or narrative framing.
         4.  Analyze the left-leaning article, summarize its points, and describe how it portrays the right-wing perspective.
         5.  Distill and list the key 'talking points' from the left-leaning perspective that challenge or counter the right-wing narrative.
@@ -170,6 +231,7 @@ const App = () => {
             "title": "string",
             "url": "string",
             "source": "string",
+            "publishedAt": "string",
             "summary": "string",
             "spinAnalysis": "string"
           },
@@ -177,6 +239,7 @@ const App = () => {
             "title": "string",
             "url": "string",
             "source": "string",
+            "publishedAt": "string",
             "summary": "string",
             "portrayalOfRight": "string"
           },
@@ -224,13 +287,12 @@ const App = () => {
   };
   
   const stopSpeech = () => {
-    if ('speechSynthesis' in window) {
+    speechQueueRef.current = { utterances: [], currentIndex: 0 };
+    if ('speechSynthesis' in window && (window.speechSynthesis.speaking || window.speechSynthesis.pending)) {
       window.speechSynthesis.cancel();
     }
     setGlobalSpeechState('stopped');
     setCurrentlySpeakingCard(null);
-    currentUtteranceIndexRef.current = 0;
-    utteranceQueueRef.current = [];
   };
 
   const resetView = () => {
@@ -240,89 +302,114 @@ const App = () => {
   };
 
   const handleGlobalSpeech = () => {
-    if (!('speechSynthesis' in window)) {
+    const synth = window.speechSynthesis;
+    if (!('speechSynthesis' in window) || !synth) {
         setError("Sorry, your browser does not support text-to-speech.");
         return;
     }
 
     if (globalSpeechState === 'playing') {
-      window.speechSynthesis.pause();
+      synth.pause();
       setGlobalSpeechState('paused');
-    } else if (globalSpeechState === 'paused') {
-      window.speechSynthesis.resume();
+      return;
+    } 
+    
+    if (globalSpeechState === 'paused') {
+      synth.resume();
       setGlobalSpeechState('playing');
-    } else if (globalSpeechState === 'stopped' && analysis) {
-      // Before starting, cancel any lingering speech and reset our index.
-      // This ensures we start from a clean state.
-      window.speechSynthesis.cancel();
-      currentUtteranceIndexRef.current = 0;
+      return;
+    }
 
-      const textToSpeak = [
-        {
-          cardId: 'right-wing',
-          text: `Right-Wing Perspective. Title: ${analysis.rightWingArticle.title}. Source: ${analysis.rightWingArticle.source}. Summary: ${analysis.rightWingArticle.summary}. Narrative and Spin Analysis: ${analysis.rightWingArticle.spinAnalysis}`
-        },
-        {
-          cardId: 'left-wing',
-          text: `Left-Wing Perspective. Title: ${analysis.leftWingArticle.title}. Source: ${analysis.leftWingArticle.source}. Summary: ${analysis.leftWingArticle.summary}. Portrayal of Right-Wing View: ${analysis.leftWingArticle.portrayalOfRight}`
-        },
-        {
-          cardId: 'leftist-points',
-          text: `Leftist Talking Points. ${analysis.leftistTalkingPoints.join('. ')}`
-        },
-        {
-          cardId: 'socialist-points',
-          text: `Socialist Talking Points. ${analysis.socialistTalkingPoints.join('. ')}`
-        }
-      ];
+    if (globalSpeechState === 'stopped' && analysis) {
+      stopSpeech(); // Ensure a completely clean state before starting
 
-      const preferredVoice = voices.find(voice => voice.name.includes('Google') && voice.lang === 'en-US') 
-        || voices.find(voice => voice.lang === 'en-US' && voice.localService) 
-        || voices.find(voice => voice.lang === 'en-US') 
-        || voices.find(voice => voice.lang.startsWith('en')) 
-        || null;
+      const speechItems: { cardId: string; text: string }[] = [];
 
-      utteranceQueueRef.current = textToSpeak.map(item => {
+      const addItems = (cardId: string, ...texts: (string | undefined | null)[]) => {
+          texts.forEach(text => {
+              if (text && text.trim().length > 0) {
+                  speechItems.push({ cardId, text });
+              }
+          });
+      };
+      
+      addItems('right-wing', 
+          'Right-Wing Perspective.',
+          `Title: ${analysis.rightWingArticle.title}`,
+          `Source: ${analysis.rightWingArticle.source}`,
+          'Summary:',
+          analysis.rightWingArticle.summary,
+          'Narrative and Spin Analysis:',
+          analysis.rightWingArticle.spinAnalysis
+      );
+      
+      addItems('left-wing',
+          'Left-Wing Perspective.',
+          `Title: ${analysis.leftWingArticle.title}`,
+          `Source: ${analysis.leftWingArticle.source}`,
+          'Summary:',
+          analysis.leftWingArticle.summary,
+          'Portrayal of Right-Wing View:',
+          analysis.leftWingArticle.portrayalOfRight
+      );
+
+      addItems('leftist-points', 'Leftist Talking Points.');
+      analysis.leftistTalkingPoints.forEach(point => addItems('leftist-points', point));
+      
+      addItems('socialist-points', 'Socialist Talking Points.');
+      analysis.socialistTalkingPoints.forEach(point => addItems('socialist-points', point));
+
+      const preferredVoice = voices.find(v => v.voiceURI === selectedVoiceURI);
+
+      const utterancesWithIds = speechItems.map(item => {
         const utterance = new SpeechSynthesisUtterance(item.text);
         if (preferredVoice) utterance.voice = preferredVoice;
         utterance.rate = 0.95;
         utterance.pitch = 1.0;
-        return { utterance, cardId: item.cardId };
-      });
-
-      const speakNext = () => {
-        if (currentUtteranceIndexRef.current >= utteranceQueueRef.current.length) {
-          stopSpeech();
-          return;
-        }
-
-        const currentItem = utteranceQueueRef.current[currentUtteranceIndexRef.current];
         
-        currentItem.utterance.onstart = () => {
-          setCurrentlySpeakingCard(currentItem.cardId);
-        };
-
-        currentItem.utterance.onend = () => {
-          currentUtteranceIndexRef.current++;
-          speakNext();
-        };
-
-        currentItem.utterance.onerror = (e) => {
+        utterance.onerror = (e) => {
           console.error("Speech synthesis error:", e);
           setError("An error occurred during speech synthesis.");
           stopSpeech();
         };
 
-        window.speechSynthesis.speak(currentItem.utterance);
-      };
-      
-      setGlobalSpeechState('playing');
-      
-      // A small delay helps prevent race conditions in some browsers where
-      // a `speak` command is issued too quickly after a `cancel`.
-      setTimeout(() => {
-        speakNext();
-      }, 100);
+        return { utterance, cardId: item.cardId };
+      });
+
+      if (utterancesWithIds.length > 0) {
+        speechQueueRef.current = {
+            utterances: utterancesWithIds,
+            currentIndex: 0
+        };
+
+        const speakNext = () => {
+            const { utterances, currentIndex } = speechQueueRef.current;
+            if (currentIndex >= utterances.length) {
+                stopSpeech(); // All finished
+                return;
+            }
+
+            const currentItem = utterances[currentIndex];
+            const currentUtterance = currentItem.utterance;
+
+            currentUtterance.onstart = () => {
+                setCurrentlySpeakingCard(currentItem.cardId);
+            };
+
+            currentUtterance.onend = () => {
+                speechQueueRef.current.currentIndex++;
+                setTimeout(speakNext, 50); // Small delay between utterances for stability
+            };
+            
+            synth.speak(currentUtterance);
+        };
+        
+        // Defensively reset the synth engine before starting
+        synth.cancel();
+
+        setGlobalSpeechState('playing');
+        setTimeout(speakNext, 100); // Start the chain after a brief delay
+      }
     }
   };
   
@@ -336,7 +423,7 @@ const App = () => {
 
   const PauseIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-      <path d="M6 3.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5-.5zm4 0a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5-.5z"/>
+      <path d="M6 3.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5.5zm4 0a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0V4a.5.5 0 0 1 .5.5z"/>
     </svg>
   );
 
@@ -395,6 +482,27 @@ const App = () => {
              <div className="headlines-section">
                 {headlinesLoading && <div className="loader" aria-label="Loading headlines"></div>}
                 {headlinesError && <div className="error" role="alert"><p>{headlinesError}</p></div>}
+                {latestHeadlines && (
+                    <div className="latest-news-section">
+                        <h2>Most Recent News</h2>
+                        <ul>
+                            {latestHeadlines.map((item, index) => (
+                                <li key={`latest-${index}`}>
+                                    <button className="headline-button latest-headline-button" onClick={() => getAnalysis(item.headline)}>
+                                        <span className="headline-emoji">{item.emoji}</span>
+                                        <div className="headline-content">
+                                            <span className="headline-text">{item.headline}</span>
+                                            <div className="headline-meta">
+                                                <span className="headline-source">{item.source}</span>
+                                                {item.publishedAt && <span className="headline-date">{new Date(item.publishedAt).toLocaleString()}</span>}
+                                            </div>
+                                        </div>
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
                 {headlines && (
                     <div className="headlines-container">
                         <div className="headlines-column">
@@ -406,7 +514,10 @@ const App = () => {
                                             <span className="headline-emoji">{item.emoji}</span>
                                             <div className="headline-content">
                                                 <span className="headline-text">{item.headline}</span>
-                                                <span className="headline-source">{item.source}</span>
+                                                <div className="headline-meta">
+                                                    <span className="headline-source">{item.source}</span>
+                                                    {item.publishedAt && <span className="headline-date">{new Date(item.publishedAt).toLocaleString()}</span>}
+                                                </div>
                                             </div>
                                         </button>
                                     </li>
@@ -422,7 +533,10 @@ const App = () => {
                                              <span className="headline-emoji">{item.emoji}</span>
                                             <div className="headline-content">
                                                 <span className="headline-text">{item.headline}</span>
-                                                <span className="headline-source">{item.source}</span>
+                                                <div className="headline-meta">
+                                                    <span className="headline-source">{item.source}</span>
+                                                    {item.publishedAt && <span className="headline-date">{new Date(item.publishedAt).toLocaleString()}</span>}
+                                                </div>
                                             </div>
                                         </button>
                                     </li>
@@ -438,14 +552,32 @@ const App = () => {
           <div className="results-container" aria-live="polite">
             <div className="results-controls">
                 <button className="back-button" onClick={resetView}>← Back to Headlines</button>
-                {(() => {
-                  const { Icon, text } = getGlobalButtonContent();
-                  return (
-                    <button className="global-read-aloud-button" onClick={handleGlobalSpeech} aria-label={text}>
-                       <Icon /> {text}
-                    </button>
-                  );
-                })()}
+                <div className="speech-controls">
+                    {voices && voices.length > 0 && (
+                        <div className="voice-selector">
+                            <label htmlFor="voice-select">Voice:</label>
+                            <select 
+                                id="voice-select" 
+                                value={selectedVoiceURI} 
+                                onChange={(e) => setSelectedVoiceURI(e.target.value)}
+                            >
+                                {voices.filter(v => v.lang.startsWith('en')).map((voice) => (
+                                    <option key={voice.voiceURI} value={voice.voiceURI}>
+                                        {voice.name} ({voice.lang})
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+                    {(() => {
+                        const { Icon, text } = getGlobalButtonContent();
+                        return (
+                            <button className="global-read-aloud-button" onClick={handleGlobalSpeech} aria-label={text}>
+                            <Icon /> {text}
+                            </button>
+                        );
+                    })()}
+                </div>
             </div>
             <div className="card topic-card">
               <div className="card-header">
@@ -456,31 +588,33 @@ const App = () => {
 
             <SpectrumMeter score={analysis.spectrumScore} justification={analysis.spectrumJustification} />
 
-            <div className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
+            <div id="right-wing" className={`card right-wing-card ${currentlySpeakingCard === 'right-wing' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Right-Wing Perspective</h2>
               </div>
               <h3><a href={analysis.rightWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis.rightWingArticle.title}</a></h3>
               <p><strong>Source:</strong> {analysis.rightWingArticle.source}</p>
+              {analysis.rightWingArticle.publishedAt && <p className="article-date"><strong>Published:</strong> {new Date(analysis.rightWingArticle.publishedAt).toLocaleString()}</p>}
               <h4>Summary</h4>
               <p>{analysis.rightWingArticle.summary}</p>
               <h4>Narrative & Spin Analysis</h4>
               <p>{analysis.rightWingArticle.spinAnalysis}</p>
             </div>
 
-            <div className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
+            <div id="left-wing" className={`card left-wing-card ${currentlySpeakingCard === 'left-wing' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Left-Wing Perspective</h2>
               </div>
               <h3><a href={analysis.leftWingArticle.url} target="_blank" rel="noopener noreferrer">{analysis.leftWingArticle.title}</a></h3>
               <p><strong>Source:</strong> {analysis.leftWingArticle.source}</p>
+              {analysis.leftWingArticle.publishedAt && <p className="article-date"><strong>Published:</strong> {new Date(analysis.leftWingArticle.publishedAt).toLocaleString()}</p>}
               <h4>Summary</h4>
               <p>{analysis.leftWingArticle.summary}</p>
               <h4>Portrayal of Right-Wing View</h4>
               <p>{analysis.leftWingArticle.portrayalOfRight}</p>
             </div>
 
-            <div className={`card left-wing-card talking-points ${currentlySpeakingCard === 'leftist-points' ? 'is-speaking' : ''}`}>
+            <div id="leftist-points" className={`card left-wing-card talking-points ${currentlySpeakingCard === 'leftist-points' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Leftist Talking Points</h2>
               </div>
@@ -491,7 +625,7 @@ const App = () => {
               </ul>
             </div>
 
-            <div className={`card socialist-card talking-points ${currentlySpeakingCard === 'socialist-points' ? 'is-speaking' : ''}`}>
+            <div id="socialist-points" className={`card socialist-card talking-points ${currentlySpeakingCard === 'socialist-points' ? 'is-speaking' : ''}`}>
               <div className="card-header">
                 <h2>Socialist Talking Points</h2>
               </div>
